@@ -27,9 +27,59 @@ async function readBody(req) {
   catch { throw Object.assign(new Error('Send a JSON object.'), { status: 400 }); }
 }
 
+const urgencyRank = { urgent: 0, normal: 1, low: 2 };
+const byPriority = (a, b) => urgencyRank[a.urgency] - urgencyRank[b.urgency]
+  || a.createdAt.localeCompare(b.createdAt)
+  || a.id.localeCompare(b.id, 'en', { numeric: true });
+// Inbox order: open before resolved, then the same priority used for the recommendation,
+// so the first open, non-snoozed card in the list is the recommended request.
+const byStatusThenPriority = (a, b) => (a.status === 'open' ? 0 : 1) - (b.status === 'open' ? 0 : 1) || byPriority(a, b);
+
+// A snooze counts only if snoozedUntil is a full ISO date-time with Z or an offset, names a
+// real calendar date, and is later than now. Anything else (missing, malformed, date-only,
+// no timezone, rolled-over dates like Feb 30, expired) leaves the request recommendable.
+const isoTimestamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+function snoozeEnd(item) {
+  const parts = typeof item.snoozedUntil === 'string' && item.snoozedUntil.match(isoTimestamp);
+  if (!parts) return null;
+  const [year, month, day, hour, minute, second = '0', offsetHour = '0', offsetMinute = '0'] = parts.slice(1);
+  const calendar = new Date(Date.UTC(+year, +month - 1, +day));
+  if (calendar.getUTCMonth() !== +month - 1 || calendar.getUTCDate() !== +day) return null;
+  if (+hour > 23 || +minute > 59 || +second > 59 || +offsetHour > 23 || +offsetMinute > 59) return null;
+  const time = Date.parse(item.snoozedUntil);
+  return Number.isNaN(time) ? null : time;
+}
+const isSnoozed = (item, now) => (snoozeEnd(item) ?? -Infinity) > now;
+const utcLabel = time => new Date(time).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+
+// Picks the open request to handle next and explains why, in the operator's terms.
+export function nextRequest(records, now = Date.now()) {
+  const open = records.filter(item => item.status === 'open');
+  const snoozed = open.filter(item => isSnoozed(item, now));
+  const available = open.filter(item => !isSnoozed(item, now)).toSorted(byPriority);
+  const request = available[0];
+  const snoozedNote = snoozed.length ? `${snoozed.length} snoozed request${snoozed.length === 1 ? '' : 's'} skipped.` : '';
+  if (!request) {
+    if (snoozed.length) {
+      const nextReturn = Math.min(...snoozed.map(snoozeEnd));
+      return { request: null, reason: `Nothing to handle right now: ${snoozed.length} snoozed request${snoozed.length === 1 ? '' : 's'}, the first returns at ${utcLabel(nextReturn)}.` };
+    }
+    return { request: null, reason: records.length ? 'All requests are handled. No open requests remain.' : 'The inbox is empty. No open requests remain.' };
+  }
+  const sameUrgency = available.filter(item => item.urgency === request.urgency);
+  const tiedWith = sameUrgency.filter(item => item !== request && item.createdAt === request.createdAt).map(item => item.id);
+  const since = new Date(request.createdAt).toISOString().slice(11, 16);
+  const parts = [`${request.urgency[0].toUpperCase()}${request.urgency.slice(1)}, waiting since ${since} UTC.`];
+  if (request.urgency !== 'urgent') parts.push(`No ${request.urgency === 'low' ? 'urgent or normal' : 'urgent'} requests are ${snoozed.length ? 'available' : 'open'}.`);
+  if (sameUrgency.length > 1) parts.push(`Oldest of ${sameUrgency.length} open ${request.urgency} requests.`);
+  if (tiedWith.length) parts.push(`Created at the same time as ${tiedWith.join(', ')}; lower ID goes first.`);
+  if (snoozedNote) parts.push(snoozedNote);
+  return { request, reason: parts.join(' ') };
+}
+
 // A new server starts with independent fictional records. A browser reload keeps changes;
 // restarting the process resets them. The exercise does not need a database or credentials.
-export function createStarterServer({ requests = seed } = {}) {
+export function createStarterServer({ requests = seed, now = () => Date.now() } = {}) {
   const records = structuredClone(requests);
   return createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -43,13 +93,13 @@ export function createStarterServer({ requests = seed } = {}) {
         return res.end(readFileSync(new URL(`./public/${file}`, import.meta.url)));
       }
       if (req.method === 'GET' && pathname === '/api/next-request') {
-        const rank = { urgent: 0, normal: 1, low: 2 };
-        const request = records.toSorted((a, b) => rank[a.urgency] - rank[b.urgency]
-          || a.createdAt.localeCompare(b.createdAt) || b.id.localeCompare(a.id))[0] || null;
-        return json(res, 200, { request, reason: request ? 'Highest urgency, then oldest request.' : 'No open requests remain.' });
+        return json(res, 200, nextRequest(records, now()));
       }
       if (req.method === 'GET' && pathname === '/api/requests') {
-        return json(res, 200, { requests: records.toSorted((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)) });
+        const at = now();
+        // `snoozed` is derived, never stored: true only for an open request whose snooze is valid and still in the future.
+        const requests = records.toSorted(byStatusThenPriority).map(item => ({ ...item, snoozed: item.status === 'open' && isSnoozed(item, at) }));
+        return json(res, 200, { requests });
       }
       const match = pathname.match(/^\/api\/requests\/([A-Z0-9-]+)$/);
       if (req.method === 'PATCH' && match) {

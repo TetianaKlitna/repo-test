@@ -28,8 +28,8 @@
         <button id="handle-next" class="handle" type="button" hidden>Mark handled</button>
       </section>
       <section class="inbox" aria-labelledby="inbox-title">
-        <div class="inbox-heading"><div><h2 id="inbox-title">Your inbox <span id="open-count" class="count">…</span></h2><p>Oldest requests first</p></div><button id="refresh" class="quiet" type="button">Refresh inbox <span aria-hidden="true">↻</span></button></div>
-        <div class="filters" role="group" aria-label="Filter requests"><button type="button" data-filter="open" aria-pressed="true">Open requests</button><button type="button" data-filter="all" aria-pressed="false">All requests</button><button type="button" data-filter="resolved" aria-pressed="false">Handled</button></div>
+        <div class="inbox-heading"><div><h2 id="inbox-title">Your inbox <span id="open-count" class="count">…</span></h2><p>Open first, most urgent first, then oldest</p></div><button id="refresh" class="quiet" type="button">Refresh inbox <span aria-hidden="true">↻</span></button></div>
+        <div class="filters" role="group" aria-label="Filter requests"><button type="button" data-filter="open" aria-pressed="true">Open requests</button><button type="button" data-filter="snoozed" aria-pressed="false">Snoozed <span id="snoozed-count">…</span></button><button type="button" data-filter="resolved" aria-pressed="false">Handled</button></div>
         <p id="status" class="status" role="status">Opening your inbox…</p>
         <p id="error" class="error" role="alert" hidden></p>
         <div id="requests" aria-label="Guest requests"></div>

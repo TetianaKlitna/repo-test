@@ -10,13 +10,20 @@ function text(tag, value, className) {
 
 async function api(path, options = {}) {
   const response = await fetch(path, { ...options, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...options.headers } });
-  const body = await response.json();
+  let body;
+  try { body = await response.json(); }
+  catch { throw new Error(response.ok ? 'The inbox sent a response we could not read. Refresh to check its current state.' : 'The request could not be completed.'); }
   if (!response.ok) throw new Error(body.error || 'The request could not be completed.');
   return body;
 }
 
 function render() {
-  const shown = records.filter(item => filter === 'all' || item.status === filter);
+  const inTab = {
+    open: item => item.status === 'open' && !item.snoozed,
+    snoozed: item => item.snoozed,
+    resolved: item => item.status === 'resolved',
+  };
+  const shown = records.filter(inTab[filter]);
   $('requests').replaceChildren(...shown.map(item => {
     const card = document.createElement('article'); card.className = 'request';
     const body = document.createElement('div');
@@ -24,18 +31,21 @@ function render() {
     const meta = text('p', '', 'meta');
     meta.append(text('span', `${item.guest} · Room ${item.room}`), text('span', item.urgency, `pill ${item.urgency}`));
     if (item.status === 'resolved') meta.append(text('span', 'Handled', 'pill resolved'));
+    if (item.snoozed) meta.append(text('span', `Snoozed until ${new Date(item.snoozedUntil).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC`, 'pill snoozed'));
     meta.append(text('time', new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'));
     body.append(meta);
     const button = text('button', item.status === 'open' ? 'Mark handled' : 'Reopen', 'handle');
     button.type = 'button'; button.disabled = busy; button.setAttribute('aria-label', `${button.textContent}: ${item.title}`);
     button.addEventListener('click', () => update(item));
-    card.append(text('span', item.guest[0], 'guest-icon'), body, button);
+    // Snoozed requests are parked until their time passes, so they get no action button.
+    card.append(text('span', item.guest[0], 'guest-icon'), body, ...(item.snoozed ? [] : [button]));
     return card;
   }));
-  const open = records.filter(item => item.status === 'open').length;
+  const open = records.filter(inTab.open).length;
   $('open-count').textContent = `${open} open`; $('nav-count').textContent = open;
+  $('snoozed-count').textContent = `(${records.filter(inTab.snoozed).length})`;
   $('empty').hidden = busy || !$('error').hidden || shown.length > 0;
-  $('empty').textContent = filter === 'resolved' ? 'Handled requests will appear here.' : 'All caught up. Your guests are in good hands.';
+  $('empty').textContent = { resolved: 'Handled requests will appear here.', snoozed: 'No snoozed requests right now.' }[filter] ?? 'All caught up. Your guests are in good hands.';
   $('refresh').disabled = busy;
   $('handle-next').disabled = busy;
   for (const button of document.querySelectorAll('[data-filter]')) button.setAttribute('aria-pressed', String(button.dataset.filter === filter));
@@ -56,7 +66,7 @@ async function load() {
 
 async function update(item) {
   if (busy) return;
-  busy = true; $('error').hidden = true; render();
+  busy = true; $('error').hidden = true; $('status').textContent = ''; render();
   try {
     await api(`/api/requests/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: JSON.stringify({ status: item.status === 'open' ? 'resolved' : 'open' }) });
     records = (await api('/api/requests')).requests;
